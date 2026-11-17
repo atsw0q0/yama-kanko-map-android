@@ -11,13 +11,22 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -25,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -33,26 +43,38 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.navigation3.runtime.NavKey
+import com.example.yama_kanko_map_android.History
+import com.example.yama_kanko_map_android.Profile
 import com.example.yama_kanko_map_android.R
+import com.example.yama_kanko_map_android.data.ActivitySportType
 import com.example.yama_kanko_map_android.data.LocationForegroundService
+import com.example.yama_kanko_map_android.data.ProfileRepository
+import com.example.yama_kanko_map_android.data.RecordingResult
+import com.example.yama_kanko_map_android.data.ResultCalculator
+import com.example.yama_kanko_map_android.data.ResultRepository
 import com.example.yama_kanko_map_android.data.Spot
+import com.example.yama_kanko_map_android.data.WalkedPathManager
 import com.example.yama_kanko_map_android.ui.theme.YamaKankoMapAndroidTheme
 import com.mapbox.geojson.Point
 import com.mapbox.maps.extension.compose.MapEffect
 import com.mapbox.maps.extension.compose.MapboxMap
 import com.mapbox.maps.extension.compose.animation.viewport.rememberMapViewportState
 import com.mapbox.maps.extension.compose.annotation.generated.PointAnnotation
+import com.mapbox.maps.extension.compose.annotation.generated.PolylineAnnotation
 import com.mapbox.maps.extension.compose.annotation.rememberIconImage
 import com.mapbox.maps.plugin.PuckBearing
 import com.mapbox.maps.plugin.locationcomponent.createDefault2DPuck
 import com.mapbox.maps.plugin.locationcomponent.location
+import java.io.File
 import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -65,7 +87,20 @@ fun MainScreen(
   var currentPositionText by remember { mutableStateOf("現在地を取得中...") }
   var lastUpdateTime by remember { mutableLongStateOf(0L) }
   var isBackgroundModeOn by remember { mutableStateOf(false) }
+  var currentSportType by remember { mutableStateOf(ActivitySportType.WALKING) }
+
+  var userProfile by remember { mutableStateOf(ProfileRepository.loadProfile(context)) }
+  var showSportSelectionDialog by remember { mutableStateOf(false) }
+
   var selectedSpot by remember { mutableStateOf<Spot?>(null) }
+  var activeResultDialog by remember { mutableStateOf<RecordingResult?>(null) }
+
+  // Clear path on app launch / dispose
+  DisposableEffect(Unit) {
+    onDispose {
+      WalkedPathManager.clearPath()
+    }
+  }
 
   val mapViewportState = rememberMapViewportState {
     setCameraOptions {
@@ -76,16 +111,22 @@ fun MainScreen(
     }
   }
 
+  val startBgMode: (ActivitySportType) -> Unit = { selectedSportType ->
+    currentSportType = selectedSportType
+    isBackgroundModeOn = true
+    WalkedPathManager.clearPath()
+    ContextCompat.startForegroundService(
+      context,
+      Intent(context, LocationForegroundService::class.java)
+    )
+    Toast.makeText(context, "${selectedSportType.displayName}モードでBG監視を開始しました。", Toast.LENGTH_SHORT).show()
+  }
+
   val notificationPermissionLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.RequestPermission()
   ) { isGranted ->
     if (isGranted) {
-      isBackgroundModeOn = true
-      ContextCompat.startForegroundService(
-        context,
-        Intent(context, LocationForegroundService::class.java)
-      )
-      Toast.makeText(context, "バックグラウンドモードをONにしました。", Toast.LENGTH_SHORT).show()
+      showSportSelectionDialog = true
     }
   }
 
@@ -100,6 +141,7 @@ fun MainScreen(
   }
 
   LaunchedEffect(Unit) {
+    userProfile = ProfileRepository.loadProfile(context)
     val fineGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
     val coarseGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
@@ -118,6 +160,14 @@ fun MainScreen(
     topBar = {
       CenterAlignedTopAppBar(
         title = { Text(stringResource(R.string.app_name) + " - Mapbox現在地") },
+        actions = {
+          TextButton(onClick = { onItemClick(History) }) {
+            Text("📜 履歴")
+          }
+          TextButton(onClick = { onItemClick(Profile) }) {
+            Text("👤 設定")
+          }
+        },
         colors = TopAppBarDefaults.topAppBarColors(
           containerColor = MaterialTheme.colorScheme.primaryContainer,
           titleContentColor = MaterialTheme.colorScheme.primary
@@ -139,18 +189,29 @@ fun MainScreen(
               isBackgroundModeOn = false
               context.stopService(Intent(context, LocationForegroundService::class.java))
               Toast.makeText(context, "バックグラウンドモードをOFFにしました。", Toast.LENGTH_SHORT).show()
+
+              // Export GPX and compute Result for current sport
+              val gpxFile = WalkedPathManager.exportToGpxFile(context)
+              val result = ResultCalculator.calculateResult(
+                title = "${currentSportType.displayName}アクティビティ",
+                sportType = currentSportType,
+                points = WalkedPathManager.trackPoints.toList(),
+                userProfile = userProfile,
+                gpxFile = gpxFile
+              )
+
+              // Save to Past Results History (App-Specific Storage)
+              ResultRepository.saveResult(context, result)
+
+              // Open Result Screen
+              activeResultDialog = result
             } else {
               if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                 ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
               ) {
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
               } else {
-                isBackgroundModeOn = true
-                ContextCompat.startForegroundService(
-                  context,
-                  Intent(context, LocationForegroundService::class.java)
-                )
-                Toast.makeText(context, "バックグラウンドモードをONにしました。", Toast.LENGTH_SHORT).show()
+                showSportSelectionDialog = true
               }
             }
           }
@@ -178,10 +239,24 @@ fun MainScreen(
         painter = painterResource(R.drawable.ic_red_pin)
       )
 
+      val pathPoints = remember(WalkedPathManager.trackPoints.size) {
+        WalkedPathManager.trackPoints.map { Point.fromLngLat(it.lng, it.lat) }
+      }
+
       MapboxMap(
         Modifier.fillMaxSize(),
         mapViewportState = mapViewportState
       ) {
+        // Draw Walked Trail in Pink (#FF1493)
+        if (pathPoints.size >= 2) {
+          PolylineAnnotation(
+            points = pathPoints
+          ) {
+            lineColor = Color(0xFFFF1493) // Deep Pink
+            lineWidth = 6.0
+          }
+        }
+
         // Render Red Pinned Spots as annotations on map with onClick
         LocationForegroundService.DEFAULT_SPOTS.forEach { spot ->
           PointAnnotation(
@@ -243,7 +318,7 @@ fun MainScreen(
             style = MaterialTheme.typography.bodySmall
           )
           Text(
-            text = if (isBackgroundModeOn) "バックグラウンド接近監視中" else "バックグラウンドモードOFF",
+            text = if (isBackgroundModeOn) "BGモード監視中 (${currentSportType.displayName} 軌跡:${WalkedPathManager.trackPoints.size}pt)" else "バックグラウンドモードOFF",
             color = if (isBackgroundModeOn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
             style = MaterialTheme.typography.labelSmall
           )
@@ -283,6 +358,228 @@ fun MainScreen(
         }
       }
     }
+  }
+
+  // Sport Selection Dialog
+  if (showSportSelectionDialog) {
+    SportSelectionDialog(
+      onDismiss = { showSportSelectionDialog = false },
+      onSportSelected = { sport ->
+        showSportSelectionDialog = false
+        startBgMode(sport)
+      }
+    )
+  }
+
+  // Result Dialog
+  activeResultDialog?.let { result ->
+    ResultDialog(
+      result = result,
+      onDismiss = {
+        activeResultDialog = null
+        WalkedPathManager.clearPath()
+      },
+      onExportGpx = {
+        exportGpxFile(context, result)
+      }
+    )
+  }
+}
+
+@Composable
+fun SportSelectionDialog(
+  onDismiss: () -> Unit,
+  onSportSelected: (ActivitySportType) -> Unit
+) {
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = { Text("🏃 種目の選択", style = MaterialTheme.typography.titleLarge) },
+    text = {
+      Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth()
+      ) {
+        Text("記録するアクティビティ種目を選択してください:", style = MaterialTheme.typography.bodyMedium)
+        Spacer(modifier = Modifier.height(8.dp))
+
+        ActivitySportType.entries.forEach { sport ->
+          Card(
+            onClick = { onSportSelected(sport) },
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Row(
+              modifier = Modifier.padding(16.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+              Text(sport.emoji, style = MaterialTheme.typography.headlineMedium)
+              Column {
+                Text(sport.displayName, style = MaterialTheme.typography.titleMedium)
+                Text(
+                  when (sport) {
+                    ActivitySportType.WALKING -> "距離・活動時間・消費カロリー"
+                    ActivitySportType.RUNNING -> "距離・時間・カロリー・ペース・ピッチ・スプリット"
+                    ActivitySportType.TRAIL_RUNNING -> "距離・時間・カロリー・獲得標高・VAM・勾配"
+                  },
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+              }
+            }
+          }
+        }
+      }
+    },
+    confirmButton = {},
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
+        Text("キャンセル")
+      }
+    }
+  )
+}
+
+@Composable
+fun ResultDialog(
+  result: RecordingResult,
+  onDismiss: () -> Unit,
+  onExportGpx: () -> Unit
+) {
+  AlertDialog(
+    onDismissRequest = onDismiss,
+    title = {
+      Text(text = "📊 ${result.sportType.emoji} アクティビティリザルト", style = MaterialTheme.typography.titleLarge)
+    },
+    text = {
+      Column(
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxWidth()
+      ) {
+        Text(text = result.title, style = MaterialTheme.typography.titleMedium)
+        Text(text = "日時: ${result.dateStr}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+        HorizontalDivider()
+
+        // 共通項目: 移動距離, 活動時間, 消費カロリー
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+          Column {
+            Text(text = "移動距離", style = MaterialTheme.typography.labelSmall)
+            Text(text = result.formattedDistance(), style = MaterialTheme.typography.bodyLarge)
+          }
+          Column {
+            Text(text = "活動時間", style = MaterialTheme.typography.labelSmall)
+            Text(text = result.formattedDuration(), style = MaterialTheme.typography.bodyLarge)
+          }
+          Column {
+            Text(text = "消費カロリー", style = MaterialTheme.typography.labelSmall)
+            Text(text = result.formattedCalories(), style = MaterialTheme.typography.bodyLarge)
+          }
+        }
+
+        // ランニング専用項目
+        if (result.sportType == ActivitySportType.RUNNING) {
+          HorizontalDivider()
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+          ) {
+            Column {
+              Text(text = "1km平均ペース", style = MaterialTheme.typography.labelSmall)
+              Text(text = result.formattedAveragePace(), style = MaterialTheme.typography.bodyLarge)
+            }
+            Column {
+              Text(text = "平均ピッチ", style = MaterialTheme.typography.labelSmall)
+              Text(text = result.formattedPitch(), style = MaterialTheme.typography.bodyLarge)
+            }
+          }
+
+          val splits = result.getKmSplitsList()
+          if (splits.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(text = "1km区間スプリット", style = MaterialTheme.typography.labelSmall)
+            LazyColumn(
+              verticalArrangement = Arrangement.spacedBy(4.dp),
+              modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 100.dp)
+            ) {
+              items(splits) { split ->
+                Text(text = split, style = MaterialTheme.typography.bodySmall)
+              }
+            }
+          }
+        }
+
+        // トレイルランニング専用項目
+        if (result.sportType == ActivitySportType.TRAIL_RUNNING) {
+          HorizontalDivider()
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+          ) {
+            Column {
+              Text(text = "獲得標高 (上昇 / 下降)", style = MaterialTheme.typography.labelSmall)
+              Text(
+                text = "${result.formattedElevationGain()} / ${result.formattedElevationLoss()}",
+                style = MaterialTheme.typography.bodyLarge
+              )
+            }
+          }
+
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+          ) {
+            Column {
+              Text(text = "上昇速度 (VAM)", style = MaterialTheme.typography.labelSmall)
+              Text(text = result.formattedVam(), style = MaterialTheme.typography.bodyLarge)
+            }
+            Column {
+              Text(text = "平均勾配", style = MaterialTheme.typography.labelSmall)
+              Text(text = result.formattedSlope(), style = MaterialTheme.typography.bodyLarge)
+            }
+          }
+        }
+      }
+    },
+    confirmButton = {
+      Button(onClick = onExportGpx) {
+        Text("GPXエクスポート")
+      }
+    },
+    dismissButton = {
+      TextButton(onClick = onDismiss) {
+        Text("閉じる")
+      }
+    }
+  )
+}
+
+private fun exportGpxFile(context: android.content.Context, result: RecordingResult) {
+  val path = result.gpxFilePath
+  val file = if (path != null) File(path) else null
+
+  if (file != null && file.exists()) {
+    try {
+      val uri = FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.fileprovider",
+        file
+      )
+      val shareIntent = Intent(Intent.ACTION_SEND).apply {
+        type = "application/gpx+xml"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      }
+      context.startActivity(Intent.createChooser(shareIntent, "GPXファイルを共有・保存"))
+    } catch (_: Exception) {
+      Toast.makeText(context, "ファイル共有に失敗しました", Toast.LENGTH_SHORT).show()
+    }
+  } else {
+    Toast.makeText(context, "GPXファイルが存在しません", Toast.LENGTH_SHORT).show()
   }
 }
 

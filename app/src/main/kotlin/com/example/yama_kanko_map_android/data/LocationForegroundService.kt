@@ -3,10 +3,13 @@ package com.example.yama_kanko_map_android.data
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.location.Location
 import android.os.Build
+import android.os.Environment
 import android.os.IBinder
+import androidx.compose.runtime.mutableStateListOf
 import androidx.core.app.NotificationCompat
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
@@ -14,8 +17,77 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 data class Spot(val name: String, val lat: Double, val lng: Double)
+
+object WalkedPathManager {
+  val trackPoints = mutableStateListOf<TrackPoint>()
+
+  fun addPoint(lat: Double, lng: Double, alt: Double, timeMillis: Long = System.currentTimeMillis()) {
+    if (trackPoints.isEmpty()) {
+      trackPoints.add(TrackPoint(lat, lng, alt, timeMillis))
+    } else {
+      val last = trackPoints.last()
+      val results = FloatArray(1)
+      Location.distanceBetween(
+        last.lat, last.lng,
+        lat, lng,
+        results
+      )
+      // 3m以上移動した場合に軌跡ポイントとして追加
+      if (results[0] >= 3.0f) {
+        trackPoints.add(TrackPoint(lat, lng, alt, timeMillis))
+      }
+    }
+  }
+
+  fun clearPath() {
+    trackPoints.clear()
+  }
+
+  /**
+   * 記録した歩行軌跡をGPX（GPS Exchange Format）形式ファイルに出力する
+   */
+  fun exportToGpxFile(context: Context): File? {
+    if (trackPoints.isEmpty()) return null
+
+    val isoSdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+      timeZone = TimeZone.getTimeZone("UTC")
+    }
+    val fileDateStr = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+    val fileName = "yama_track_$fileDateStr.gpx"
+
+    val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
+    val gpxFile = File(dir, fileName)
+
+    val sb = StringBuilder()
+    sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+    sb.append("<gpx version=\"1.1\" creator=\"yama-kanko-map-android\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n")
+    sb.append("  <trk>\n")
+    sb.append("    <name>ヤマ観光マップ 歩行軌跡 (${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.JAPAN).format(Date())})</name>\n")
+    sb.append("    <trkseg>\n")
+
+    trackPoints.forEach { pt ->
+      val timeStr = isoSdf.format(Date(pt.timeMillis))
+      sb.append("      <trkpt lat=\"${pt.lat}\" lon=\"${pt.lng}\">\n")
+      sb.append("        <ele>${pt.alt}</ele>\n")
+      sb.append("        <time>$timeStr</time>\n")
+      sb.append("      </trkpt>\n")
+    }
+
+    sb.append("    </trkseg>\n")
+    sb.append("  </trk>\n")
+    sb.append("</gpx>")
+
+    gpxFile.writeText(sb.toString())
+    return gpxFile
+  }
+}
 
 class LocationForegroundService : Service() {
 
@@ -61,6 +133,8 @@ class LocationForegroundService : Service() {
     locationCallback = object : LocationCallback() {
       override fun onLocationResult(locationResult: LocationResult) {
         val current = locationResult.lastLocation ?: return
+        // 歩いた軌跡ポイントを記録（緯度・経度・高度・タイムスタンプ）
+        WalkedPathManager.addPoint(current.latitude, current.longitude, current.altitude, current.time)
         checkProximity(current)
       }
     }
@@ -69,7 +143,7 @@ class LocationForegroundService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     val notification = NotificationCompat.Builder(this, CHANNEL_ID)
       .setContentTitle("バックグラウンド位置監視中")
-      .setContentText("ピン留め地点への接近を監視しています...")
+      .setContentText("ピン留め地点への接近と軌跡を記録しています...")
       .setSmallIcon(android.R.drawable.ic_menu_mylocation)
       .setOngoing(true)
       .build()
@@ -83,7 +157,7 @@ class LocationForegroundService : Service() {
   private fun startLocationUpdates() {
     val locationRequest = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5000L)
       .setMinUpdateIntervalMillis(3000L)
-      .setMinUpdateDistanceMeters(5f)
+      .setMinUpdateDistanceMeters(3f)
       .build()
 
     try {

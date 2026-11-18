@@ -53,6 +53,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.navigation3.runtime.NavKey
 import com.example.yama_kanko_map_android.History
+import com.example.yama_kanko_map_android.Insights
 import com.example.yama_kanko_map_android.Profile
 import com.example.yama_kanko_map_android.R
 import com.example.yama_kanko_map_android.data.ActivitySportType
@@ -161,6 +162,9 @@ fun MainScreen(
       CenterAlignedTopAppBar(
         title = { Text(stringResource(R.string.app_name) + " - Mapbox現在地") },
         actions = {
+          TextButton(onClick = { onItemClick(Insights) }) {
+            Text("📊 インサイト")
+          }
           TextButton(onClick = { onItemClick(History) }) {
             Text("📜 履歴")
           }
@@ -558,7 +562,7 @@ fun ResultDialog(
   )
 }
 
-private fun exportGpxFile(context: android.content.Context, result: RecordingResult) {
+fun exportGpxFile(context: android.content.Context, result: RecordingResult) {
   val path = result.gpxFilePath
   val file = if (path != null) File(path) else null
 

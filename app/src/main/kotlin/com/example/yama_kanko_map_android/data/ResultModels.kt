@@ -127,6 +127,22 @@ data class RecordingResult(
   }
 }
 
+data class SportSummary(
+  val sportType: ActivitySportType,
+  val count: Int,
+  val totalCaloriesKcal: Float,
+  val totalDistanceKm: Float,
+  val totalDurationMillis: Long
+)
+
+data class MonthlySummary(
+  val yearMonthStr: String,
+  val sportSummaries: List<SportSummary>,
+  val totalCaloriesKcal: Float,
+  val totalDistanceKm: Float,
+  val totalDurationMillis: Long
+)
+
 object ResultCalculator {
   fun calculateResult(
     title: String,
@@ -276,6 +292,42 @@ object ResultRepository {
       }
     }
     saveList(context, emptyList())
+  }
+
+  fun getDailyTotalCalories(context: Context, targetDateStr: String): Float {
+    // targetDateStr: "yyyy/MM/dd"
+    return loadResults(context)
+      .filter { it.dateStr.startsWith(targetDateStr) }
+      .sumOf { it.caloriesKcal.toDouble() }
+      .toFloat()
+  }
+
+  fun getResultsForDate(context: Context, targetDateStr: String): List<RecordingResult> {
+    return loadResults(context).filter { it.dateStr.startsWith(targetDateStr) }
+  }
+
+  fun getMonthlySummary(context: Context, yearMonthStr: String): MonthlySummary {
+    // yearMonthStr: "yyyy/MM"
+    val monthResults = loadResults(context).filter { it.dateStr.startsWith(yearMonthStr) }
+
+    val sportSummaries = ActivitySportType.entries.map { sport ->
+      val items = monthResults.filter { it.sportType == sport }
+      SportSummary(
+        sportType = sport,
+        count = items.size,
+        totalCaloriesKcal = items.sumOf { it.caloriesKcal.toDouble() }.toFloat(),
+        totalDistanceKm = items.sumOf { (it.distanceMeters / 1000f).toDouble() }.toFloat(),
+        totalDurationMillis = items.sumOf { it.durationMillis }
+      )
+    }
+
+    return MonthlySummary(
+      yearMonthStr = yearMonthStr,
+      sportSummaries = sportSummaries,
+      totalCaloriesKcal = monthResults.sumOf { it.caloriesKcal.toDouble() }.toFloat(),
+      totalDistanceKm = monthResults.sumOf { (it.distanceMeters / 1000f).toDouble() }.toFloat(),
+      totalDurationMillis = monthResults.sumOf { it.durationMillis }
+    )
   }
 
   fun loadResults(context: Context): List<RecordingResult> {

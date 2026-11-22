@@ -96,8 +96,9 @@ class LocationForegroundService : Service() {
     const val ARRIVAL_CHANNEL_ID = "arrival_alert_channel"
     const val NOTIF_ID = 1001
 
-    // 総武線沿線（千葉駅〜秋葉原駅）の各駅データ
+    // 北横岳山頂および総武線沿線各駅データ
     val DEFAULT_SPOTS = listOf(
+      Spot("北横岳山頂", 36.082778, 138.322778),
       Spot("千葉駅", 35.613271, 140.113247),
       Spot("西千葉駅", 35.6225867, 140.1033586),
       Spot("稲毛駅", 35.6373207, 140.092457),

@@ -24,15 +24,21 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -40,6 +46,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,6 +82,7 @@ import com.mapbox.maps.extension.compose.annotation.rememberIconImage
 import com.mapbox.maps.plugin.PuckBearing
 import com.mapbox.maps.plugin.locationcomponent.createDefault2DPuck
 import com.mapbox.maps.plugin.locationcomponent.location
+import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Locale
 
@@ -85,6 +93,9 @@ fun MainScreen(
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
+  val scope = rememberCoroutineScope()
+  val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+
   var currentPositionText by remember { mutableStateOf("現在地を取得中...") }
   var lastUpdateTime by remember { mutableLongStateOf(0L) }
   var isBackgroundModeOn by remember { mutableStateOf(false) }
@@ -156,207 +167,244 @@ fun MainScreen(
     }
   }
 
-  Scaffold(
-    modifier = modifier,
-    topBar = {
-      CenterAlignedTopAppBar(
-        title = { Text(stringResource(R.string.app_name) + " - Mapbox現在地") },
-        actions = {
-          TextButton(onClick = { onItemClick(Insights) }) {
-            Text("📊 インサイト")
-          }
-          TextButton(onClick = { onItemClick(History) }) {
-            Text("📜 履歴")
-          }
-          TextButton(onClick = { onItemClick(Profile) }) {
-            Text("👤 設定")
-          }
-        },
-        colors = TopAppBarDefaults.topAppBarColors(
-          containerColor = MaterialTheme.colorScheme.primaryContainer,
-          titleContentColor = MaterialTheme.colorScheme.primary
-        )
-      )
-    },
-    floatingActionButton = {
-      Column(
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-        horizontalAlignment = Alignment.End
-      ) {
-        // Toggle Button for Background Mode
-        Button(
-          colors = ButtonDefaults.buttonColors(
-            containerColor = if (isBackgroundModeOn) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-          ),
-          onClick = {
-            if (isBackgroundModeOn) {
-              isBackgroundModeOn = false
-              context.stopService(Intent(context, LocationForegroundService::class.java))
-              Toast.makeText(context, "バックグラウンドモードをOFFにしました。", Toast.LENGTH_SHORT).show()
-
-              // Export GPX and compute Result for current sport
-              val gpxFile = WalkedPathManager.exportToGpxFile(context)
-              val result = ResultCalculator.calculateResult(
-                title = "${currentSportType.displayName}アクティビティ",
-                sportType = currentSportType,
-                points = WalkedPathManager.trackPoints.toList(),
-                userProfile = userProfile,
-                gpxFile = gpxFile
-              )
-
-              // Save to Past Results History (App-Specific Storage)
-              ResultRepository.saveResult(context, result)
-
-              // Open Result Screen
-              activeResultDialog = result
-            } else {
-              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-              ) {
-                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-              } else {
-                showSportSelectionDialog = true
-              }
-            }
-          }
-        ) {
-          Text(if (isBackgroundModeOn) "BGモード: OFF" else "BGモード: ON")
+  ModalNavigationDrawer(
+    drawerState = drawerState,
+    gesturesEnabled = drawerState.isOpen,
+    drawerContent = {
+      ModalDrawerSheet {
+        Column(modifier = Modifier.padding(20.dp)) {
+          Text("⛰️ ヤマ観光マップ", style = MaterialTheme.typography.titleLarge)
+          Text("山岳観光 & アクティビティ記録", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        HorizontalDivider()
 
-        FloatingActionButton(
+        NavigationDrawerItem(
+          label = { Text("🗺️ マップホーム") },
+          selected = true,
           onClick = {
+            scope.launch { drawerState.close() }
             mapViewportState.transitionToFollowPuckState()
           }
-        ) {
-          Text("現在地", modifier = Modifier.padding(horizontal = 12.dp))
-        }
+        )
+        NavigationDrawerItem(
+          label = { Text("📊 インサイト & カレンダー") },
+          selected = false,
+          onClick = {
+            scope.launch { drawerState.close() }
+            onItemClick(Insights)
+          }
+        )
+        NavigationDrawerItem(
+          label = { Text("📜 アクティビティ履歴") },
+          selected = false,
+          onClick = {
+            scope.launch { drawerState.close() }
+            onItemClick(History)
+          }
+        )
+        NavigationDrawerItem(
+          label = { Text("👤 プロフィール設定") },
+          selected = false,
+          onClick = {
+            scope.launch { drawerState.close() }
+            onItemClick(Profile)
+          }
+        )
       }
     }
-  ) { innerPadding ->
-    Box(
-      modifier = Modifier
-        .fillMaxSize()
-        .padding(innerPadding)
-    ) {
-      val redPinImage = rememberIconImage(
-        key = "red-pin-icon",
-        painter = painterResource(R.drawable.ic_red_pin)
-      )
-
-      val pathPoints = remember(WalkedPathManager.trackPoints.size) {
-        WalkedPathManager.trackPoints.map { Point.fromLngLat(it.lng, it.lat) }
-      }
-
-      MapboxMap(
-        Modifier.fillMaxSize(),
-        mapViewportState = mapViewportState
-      ) {
-        // Draw Walked Trail in Pink (#FF1493)
-        if (pathPoints.size >= 2) {
-          PolylineAnnotation(
-            points = pathPoints
-          ) {
-            lineColor = Color(0xFFFF1493) // Deep Pink
-            lineWidth = 6.0
-          }
-        }
-
-        // Render Red Pinned Spots as annotations on map with onClick
-        LocationForegroundService.DEFAULT_SPOTS.forEach { spot ->
-          PointAnnotation(
-            point = Point.fromLngLat(spot.lng, spot.lat),
-            onClick = {
-              selectedSpot = spot
-              Toast.makeText(
-                context,
-                "【${spot.name}】\n緯度: ${spot.lat}\n経度: ${spot.lng}",
-                Toast.LENGTH_SHORT
-              ).show()
-              true
+  ) {
+    Scaffold(
+      modifier = modifier,
+      topBar = {
+        CenterAlignedTopAppBar(
+          title = { Text("⛰️ ヤマ観光マップ") },
+          navigationIcon = {
+            IconButton(onClick = { scope.launch { drawerState.open() } }) {
+              Text("☰", style = MaterialTheme.typography.titleLarge)
             }
-          ) {
-            iconImage = redPinImage
-            iconSize = 1.0
-            textField = spot.name
-            textSize = 12.0
-            textOffset = listOf(0.0, 1.8)
-          }
-        }
-
-        MapEffect(Unit) { mapView ->
-          mapView.location.updateSettings {
-            enabled = true
-            locationPuck = createDefault2DPuck(withBearing = true)
-            puckBearingEnabled = true
-            puckBearing = PuckBearing.COURSE
-          }
-
-          mapView.location.addOnIndicatorPositionChangedListener { point ->
-            val now = System.currentTimeMillis()
-            if (now - lastUpdateTime >= 10_000L) {
-              lastUpdateTime = now
-              val formattedLat = String.format(Locale.US, "%.3f", point.latitude())
-              val formattedLng = String.format(Locale.US, "%.3f", point.longitude())
-              currentPositionText = "現在地: $formattedLat, $formattedLng"
-            }
-          }
-
-          mapViewportState.transitionToFollowPuckState()
-        }
-      }
-
-      // Status overlay at top
-      Surface(
-        modifier = Modifier
-          .align(Alignment.TopCenter)
-          .padding(8.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-        shape = MaterialTheme.shapes.medium
-      ) {
+          },
+          colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            titleContentColor = MaterialTheme.colorScheme.primary
+          )
+        )
+      },
+      floatingActionButton = {
         Column(
-          modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-          horizontalAlignment = Alignment.CenterHorizontally
+          verticalArrangement = Arrangement.spacedBy(8.dp),
+          horizontalAlignment = Alignment.End
         ) {
-          Text(
-            text = currentPositionText,
-            style = MaterialTheme.typography.bodySmall
-          )
-          Text(
-            text = if (isBackgroundModeOn) "BGモード監視中 (${currentSportType.displayName} 軌跡:${WalkedPathManager.trackPoints.size}pt)" else "バックグラウンドモードOFF",
-            color = if (isBackgroundModeOn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
-            style = MaterialTheme.typography.labelSmall
-          )
+          // Toggle Button for Background Mode
+          Button(
+            colors = ButtonDefaults.buttonColors(
+              containerColor = if (isBackgroundModeOn) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+            ),
+            onClick = {
+              if (isBackgroundModeOn) {
+                isBackgroundModeOn = false
+                context.stopService(Intent(context, LocationForegroundService::class.java))
+                Toast.makeText(context, "バックグラウンドモードをOFFにしました。", Toast.LENGTH_SHORT).show()
+
+                val gpxFile = WalkedPathManager.exportToGpxFile(context)
+                val result = ResultCalculator.calculateResult(
+                  title = "${currentSportType.displayName}アクティビティ",
+                  sportType = currentSportType,
+                  points = WalkedPathManager.trackPoints.toList(),
+                  userProfile = userProfile,
+                  gpxFile = gpxFile
+                )
+
+                ResultRepository.saveResult(context, result)
+                activeResultDialog = result
+              } else {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                  ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                ) {
+                  notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                  showSportSelectionDialog = true
+                }
+              }
+            }
+          ) {
+            Text(if (isBackgroundModeOn) "BGモード: OFF" else "BGモード: ON")
+          }
+
+          FloatingActionButton(
+            onClick = {
+              mapViewportState.transitionToFollowPuckState()
+            }
+          ) {
+            Text("現在地", modifier = Modifier.padding(horizontal = 12.dp))
+          }
         }
       }
+    ) { innerPadding ->
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(innerPadding)
+      ) {
+        val redPinImage = rememberIconImage(
+          key = "red-pin-icon",
+          painter = painterResource(R.drawable.ic_red_pin)
+        )
 
-      // Detail card at bottom when a marker is tapped
-      selectedSpot?.let { spot ->
+        val pathPoints = remember(WalkedPathManager.trackPoints.size) {
+          WalkedPathManager.trackPoints.map { Point.fromLngLat(it.lng, it.lat) }
+        }
+
+        MapboxMap(
+          Modifier.fillMaxSize(),
+          mapViewportState = mapViewportState
+        ) {
+          // Draw Walked Trail in Pink (#FF1493)
+          if (pathPoints.size >= 2) {
+            PolylineAnnotation(
+              points = pathPoints
+            ) {
+              lineColor = Color(0xFFFF1493) // Deep Pink
+              lineWidth = 6.0
+            }
+          }
+
+          // Render Red Pinned Spots as annotations on map with onClick
+          LocationForegroundService.DEFAULT_SPOTS.forEach { spot ->
+            PointAnnotation(
+              point = Point.fromLngLat(spot.lng, spot.lat),
+              onClick = {
+                selectedSpot = spot
+                Toast.makeText(
+                  context,
+                  "【${spot.name}】\n緯度: ${spot.lat}\n経度: ${spot.lng}",
+                  Toast.LENGTH_SHORT
+                ).show()
+                true
+              }
+            ) {
+              iconImage = redPinImage
+              iconSize = 1.0
+              textField = spot.name
+              textSize = 12.0
+              textOffset = listOf(0.0, 1.8)
+            }
+          }
+
+          MapEffect(Unit) { mapView ->
+            mapView.location.updateSettings {
+              enabled = true
+              locationPuck = createDefault2DPuck(withBearing = true)
+              puckBearingEnabled = true
+              puckBearing = PuckBearing.COURSE
+            }
+
+            mapView.location.addOnIndicatorPositionChangedListener { point ->
+              val now = System.currentTimeMillis()
+              if (now - lastUpdateTime >= 10_000L) {
+                lastUpdateTime = now
+                val formattedLat = String.format(Locale.US, "%.3f", point.latitude())
+                val formattedLng = String.format(Locale.US, "%.3f", point.longitude())
+                currentPositionText = "現在地: $formattedLat, $formattedLng"
+              }
+            }
+
+            mapViewportState.transitionToFollowPuckState()
+          }
+        }
+
+        // Status Overlay at top center
         Surface(
           modifier = Modifier
-            .align(Alignment.BottomCenter)
-            .padding(bottom = 80.dp, start = 16.dp, end = 16.dp),
-          color = MaterialTheme.colorScheme.surfaceContainerHigh,
-          shape = MaterialTheme.shapes.medium,
-          tonalElevation = 6.dp
+            .align(Alignment.TopCenter)
+            .padding(8.dp),
+          color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+          shape = MaterialTheme.shapes.medium
         ) {
-          Row(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+          Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
           ) {
-            Column(modifier = Modifier.weight(1f)) {
-              Text(
-                text = "📍 ${spot.name}",
-                style = MaterialTheme.typography.titleMedium
-              )
-              Text(
-                text = "緯度: ${spot.lat}\n経度: ${spot.lng}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-              )
-            }
-            TextButton(onClick = { selectedSpot = null }) {
-              Text("閉じる")
+            Text(
+              text = currentPositionText,
+              style = MaterialTheme.typography.bodySmall
+            )
+            Text(
+              text = if (isBackgroundModeOn) "BGモード監視中 (${currentSportType.displayName} 軌跡:${WalkedPathManager.trackPoints.size}pt)" else "バックグラウンドモードOFF",
+              color = if (isBackgroundModeOn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+              style = MaterialTheme.typography.labelSmall
+            )
+          }
+        }
+
+        // Detail card at bottom when a marker is tapped
+        selectedSpot?.let { spot ->
+          Surface(
+            modifier = Modifier
+              .align(Alignment.BottomCenter)
+              .padding(bottom = 80.dp, start = 16.dp, end = 16.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+            shape = MaterialTheme.shapes.medium,
+            tonalElevation = 8.dp
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+              Column(modifier = Modifier.weight(1f)) {
+                Text(
+                  text = "📍 ${spot.name}",
+                  style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                  text = "緯度: ${spot.lat}\n経度: ${spot.lng}",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+              }
+              TextButton(onClick = { selectedSpot = null }) {
+                Text("閉じる")
+              }
             }
           }
         }
@@ -423,7 +471,7 @@ fun SportSelectionDialog(
                   when (sport) {
                     ActivitySportType.WALKING -> "距離・活動時間・消費カロリー"
                     ActivitySportType.RUNNING -> "距離・時間・カロリー・ペース・ピッチ・スプリット"
-                    ActivitySportType.TRAIL_RUNNING -> "距離・時間・カロリー・獲得標高・VAM・勾配"
+                    ActivitySportType.TRAIL_RUNNING, ActivitySportType.MOUNTAINEERING -> "距離・時間・カロリー・獲得標高・VAM・勾配"
                   },
                   style = MaterialTheme.typography.bodySmall,
                   color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -436,8 +484,8 @@ fun SportSelectionDialog(
     },
     confirmButton = {},
     dismissButton = {
-      TextButton(onClick = onDismiss) {
-        Text("キャンセル")
+      TextButton(onClick = { onDismiss() }) {
+        Text("閉じる")
       }
     }
   )
@@ -517,8 +565,8 @@ fun ResultDialog(
           }
         }
 
-        // トレイルランニング専用項目
-        if (result.sportType == ActivitySportType.TRAIL_RUNNING) {
+        // トレイルランニング＆登山専用項目
+        if (result.sportType == ActivitySportType.TRAIL_RUNNING || result.sportType == ActivitySportType.MOUNTAINEERING) {
           HorizontalDivider()
           Row(
             modifier = Modifier.fillMaxWidth(),

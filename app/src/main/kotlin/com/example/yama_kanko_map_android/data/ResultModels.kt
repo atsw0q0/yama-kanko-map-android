@@ -13,7 +13,8 @@ import java.util.UUID
 enum class ActivitySportType(val displayName: String, val emoji: String) {
   WALKING("徒歩", "🚶"),
   RUNNING("ランニング", "🏃"),
-  TRAIL_RUNNING("トレイルランニング", "🏔")
+  TRAIL_RUNNING("トレイルランニング", "🏃‍♂️"),
+  MOUNTAINEERING("登山", "🏔")
 }
 
 data class UserProfile(
@@ -179,7 +180,7 @@ object ResultCalculator {
     val mets = when (sportType) {
       ActivitySportType.WALKING -> if (speedKmh > 5f) 4.3f else 3.5f
       ActivitySportType.RUNNING -> if (speedKmh > 10f) 10.0f else 8.0f
-      ActivitySportType.TRAIL_RUNNING -> 9.0f
+      ActivitySportType.TRAIL_RUNNING, ActivitySportType.MOUNTAINEERING -> 9.0f
     }
     val calories = (mets * userProfile.weightKg * durationHours * 1.05f).coerceAtLeast(0f)
 

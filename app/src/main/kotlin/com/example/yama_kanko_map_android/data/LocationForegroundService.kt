@@ -17,6 +17,8 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -27,10 +29,13 @@ data class Spot(val name: String, val lat: Double, val lng: Double)
 
 object WalkedPathManager {
   val trackPoints = mutableStateListOf<TrackPoint>()
+  private const val TEMP_FILE_NAME = "active_recording_path.json"
 
-  fun addPoint(lat: Double, lng: Double, alt: Double, timeMillis: Long = System.currentTimeMillis()) {
+  fun addPoint(context: Context?, lat: Double, lng: Double, alt: Double, timeMillis: Long = System.currentTimeMillis()) {
+    val newPt = TrackPoint(lat, lng, alt, timeMillis)
     if (trackPoints.isEmpty()) {
-      trackPoints.add(TrackPoint(lat, lng, alt, timeMillis))
+      trackPoints.add(newPt)
+      if (context != null) saveToDisk(context)
     } else {
       val last = trackPoints.last()
       val results = FloatArray(1)
@@ -41,8 +46,64 @@ object WalkedPathManager {
       )
       // 3m以上移動した場合に軌跡ポイントとして追加
       if (results[0] >= 3.0f) {
-        trackPoints.add(TrackPoint(lat, lng, alt, timeMillis))
+        trackPoints.add(newPt)
+        if (context != null) saveToDisk(context)
       }
+    }
+  }
+
+  fun restoreSessionIfAny(context: Context): Int {
+    if (trackPoints.isNotEmpty()) return trackPoints.size
+    val file = File(context.getExternalFilesDir(null), TEMP_FILE_NAME)
+    if (!file.exists()) return 0
+
+    return try {
+      val jsonArray = JSONArray(file.readText())
+      val list = mutableListOf<TrackPoint>()
+      for (i in 0 until jsonArray.length()) {
+        val obj = jsonArray.getJSONObject(i)
+        list.add(
+          TrackPoint(
+            lat = obj.getDouble("lat"),
+            lng = obj.getDouble("lng"),
+            alt = obj.getDouble("alt"),
+            timeMillis = obj.getLong("timeMillis")
+          )
+        )
+      }
+      trackPoints.clear()
+      trackPoints.addAll(list)
+      list.size
+    } catch (_: Exception) {
+      0
+    }
+  }
+
+  private fun saveToDisk(context: Context) {
+    try {
+      val jsonArray = JSONArray()
+      trackPoints.forEach { pt ->
+        val obj = JSONObject().apply {
+          put("lat", pt.lat)
+          put("lng", pt.lng)
+          put("alt", pt.alt)
+          put("timeMillis", pt.timeMillis)
+        }
+        jsonArray.put(obj)
+      }
+      val file = File(context.getExternalFilesDir(null), TEMP_FILE_NAME)
+      file.writeText(jsonArray.toString())
+    } catch (_: Exception) {
+      // Ignore disk write errors
+    }
+  }
+
+  fun clearSession(context: Context) {
+    trackPoints.clear()
+    RecordingPreferences.clear(context)
+    val file = File(context.getExternalFilesDir(null), TEMP_FILE_NAME)
+    if (file.exists()) {
+      file.delete()
     }
   }
 
@@ -131,19 +192,23 @@ class LocationForegroundService : Service() {
     createNotificationChannels()
     fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
 
+    // Restore previous session if recovering from crash/reboot
+    WalkedPathManager.restoreSessionIfAny(this)
+
     locationCallback = object : LocationCallback() {
       override fun onLocationResult(locationResult: LocationResult) {
         val current = locationResult.lastLocation ?: return
-        // 歩いた軌跡ポイントを記録（緯度・経度・高度・タイムスタンプ）
-        WalkedPathManager.addPoint(current.latitude, current.longitude, current.altitude, current.time)
+        // 歩いた軌跡ポイントを記録＆ディスクへ追記保存
+        WalkedPathManager.addPoint(this@LocationForegroundService, current.latitude, current.longitude, current.altitude, current.time)
         checkProximity(current)
       }
     }
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    val sportType = RecordingPreferences.getSportType(this)
     val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-      .setContentTitle("バックグラウンド位置監視中")
+      .setContentTitle("バックグラウンド位置監視中 (${sportType.displayName})")
       .setContentText("ピン留め地点への接近と軌跡を記録しています...")
       .setSmallIcon(android.R.drawable.ic_menu_mylocation)
       .setOngoing(true)
@@ -179,15 +244,12 @@ class LocationForegroundService : Service() {
 
       val distanceMeters = results[0]
 
-      // 条件 ②: 半径15m以内に近づいたらプッシュ通知
       if (distanceMeters <= 15.0) {
-        // 条件 ③: 連打・連続通知を防ぐ（未通知の場合のみ通知）
         if (!notifiedSpots.contains(spot.name)) {
           notifiedSpots.add(spot.name)
           sendArrivalNotification(spot.name)
         }
       } else if (distanceMeters > 100.0) {
-        // 100m以上離れた場合は通知済みフラグをリセット
         notifiedSpots.remove(spot.name)
       }
     }

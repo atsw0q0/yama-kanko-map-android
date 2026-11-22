@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -64,8 +65,10 @@ import com.example.yama_kanko_map_android.Insights
 import com.example.yama_kanko_map_android.Profile
 import com.example.yama_kanko_map_android.R
 import com.example.yama_kanko_map_android.data.ActivitySportType
+import com.example.yama_kanko_map_android.data.BatteryOptimizationUtil
 import com.example.yama_kanko_map_android.data.LocationForegroundService
 import com.example.yama_kanko_map_android.data.ProfileRepository
+import com.example.yama_kanko_map_android.data.RecordingPreferences
 import com.example.yama_kanko_map_android.data.RecordingResult
 import com.example.yama_kanko_map_android.data.ResultCalculator
 import com.example.yama_kanko_map_android.data.ResultRepository
@@ -103,16 +106,10 @@ fun MainScreen(
 
   var userProfile by remember { mutableStateOf(ProfileRepository.loadProfile(context)) }
   var showSportSelectionDialog by remember { mutableStateOf(false) }
+  var showBatteryOptDialog by remember { mutableStateOf(false) }
 
   var selectedSpot by remember { mutableStateOf<Spot?>(null) }
   var activeResultDialog by remember { mutableStateOf<RecordingResult?>(null) }
-
-  // Clear path on app launch / dispose
-  DisposableEffect(Unit) {
-    onDispose {
-      WalkedPathManager.clearPath()
-    }
-  }
 
   val mapViewportState = rememberMapViewportState {
     setCameraOptions {
@@ -126,7 +123,7 @@ fun MainScreen(
   val startBgMode: (ActivitySportType) -> Unit = { selectedSportType ->
     currentSportType = selectedSportType
     isBackgroundModeOn = true
-    WalkedPathManager.clearPath()
+    RecordingPreferences.setRecordingState(context, isRecording = true, sportType = selectedSportType)
     ContextCompat.startForegroundService(
       context,
       Intent(context, LocationForegroundService::class.java)
@@ -138,7 +135,11 @@ fun MainScreen(
     contract = ActivityResultContracts.RequestPermission()
   ) { isGranted ->
     if (isGranted) {
-      showSportSelectionDialog = true
+      if (!BatteryOptimizationUtil.isIgnoringBatteryOptimizations(context)) {
+        showBatteryOptDialog = true
+      } else {
+        showSportSelectionDialog = true
+      }
     }
   }
 
@@ -154,6 +155,17 @@ fun MainScreen(
 
   LaunchedEffect(Unit) {
     userProfile = ProfileRepository.loadProfile(context)
+
+    // Restore previous active session after crash/reboot if any
+    val restoredPoints = WalkedPathManager.restoreSessionIfAny(context)
+    if (RecordingPreferences.isRecording(context)) {
+      isBackgroundModeOn = true
+      currentSportType = RecordingPreferences.getSportType(context)
+      if (restoredPoints > 0) {
+        Toast.makeText(context, "前回の記録セッションを自動復旧しました (軌跡:${restoredPoints}pt)", Toast.LENGTH_LONG).show()
+      }
+    }
+
     val fineGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
     val coarseGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
@@ -255,6 +267,7 @@ fun MainScreen(
                 )
 
                 ResultRepository.saveResult(context, result)
+                WalkedPathManager.clearSession(context)
                 activeResultDialog = result
               } else {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -262,7 +275,11 @@ fun MainScreen(
                 ) {
                   notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                 } else {
-                  showSportSelectionDialog = true
+                  if (!BatteryOptimizationUtil.isIgnoringBatteryOptimizations(context)) {
+                    showBatteryOptDialog = true
+                  } else {
+                    showSportSelectionDialog = true
+                  }
                 }
               }
             }
@@ -410,6 +427,44 @@ fun MainScreen(
         }
       }
     }
+  }
+
+  // Battery Optimization Guidance Dialog
+  if (showBatteryOptDialog) {
+    AlertDialog(
+      onDismissRequest = {
+        showBatteryOptDialog = false
+        showSportSelectionDialog = true
+      },
+      title = { Text("⚡ バッテリー制限の案内", style = MaterialTheme.typography.titleLarge) },
+      text = {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          Text("長時間の登山やアクティビティ中にバックグラウンド位置記録を途切れさせないため、バッテリー最適化の解除をおすすめします。", style = MaterialTheme.typography.bodyMedium)
+          Text("※設定画面で「無制限」または「最適化しない」を選択してください。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            showBatteryOptDialog = false
+            BatteryOptimizationUtil.openBatteryOptimizationSettings(context)
+            showSportSelectionDialog = true
+          }
+        ) {
+          Text("設定画面を開く")
+        }
+      },
+      dismissButton = {
+        TextButton(
+          onClick = {
+            showBatteryOptDialog = false
+            showSportSelectionDialog = true
+          }
+        ) {
+          Text("スキップして開始")
+        }
+      }
+    )
   }
 
   // Sport Selection Dialog
